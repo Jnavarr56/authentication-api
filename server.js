@@ -9,6 +9,7 @@ import { TokenData } from './db'
 import qs from 'querystring'
 import axios from 'axios'
 import NodeCache from 'node-cache'
+import morgan, { token } from 'morgan'
 
 require('dotenv').config()
 
@@ -27,7 +28,9 @@ if (!PORT || !DB_URL) {
 const stateParamCache = new NodeCache()
 
 const app = express()
-app.use(cors())
+app
+    .use(cors())
+    .use(morgan('dev'))
 
 app.get('/authentication/initiate', (req, res) => {
 
@@ -64,6 +67,9 @@ app.get('/authentication/initiate', (req, res) => {
 app.get('/authentication/callback', async (req, res) => {
 
     const { state: state_param_encrypted, code } = req.query
+    if (!state_param_encrypted || !code) {
+        return res.status(500).send({ code: 'MISSING PARAMS ERROR' })
+    }
 
     const stateParamVals = stateParamCache.get(state_param_encrypted)
     if (!stateParamVals) {
@@ -94,9 +100,7 @@ app.get('/authentication/callback', async (req, res) => {
         const TOKEN_URL = 'https://accounts.spotify.com/api/token'
         const tokenReqContentType = 'application/x-www-form-urlencoded'
         const tokenReqConfig = {
-            headers: {
-                Authorization: `Basic ${encodedCredentials}`
-            },
+            headers: { Authorization: `Basic ${encodedCredentials}` },
             'Content-Type': tokenReqContentType
         }
         const tokenReqData = qs.stringify({
@@ -111,24 +115,21 @@ app.get('/authentication/callback', async (req, res) => {
             return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
         }
 
-        const {
-            refresh_token,
-            access_token
-        } = tokenData
+        const { refresh_token, access_token } = tokenData
         const ME_URL = 'https://api.spotify.com/v1/me' 
         const meReqConfig = {
-            headers: {
-                Authorization: `Bearer ${access_token}`
-            }
+            headers: { Authorization: `Bearer ${access_token}` }
         }
-        const meData = await axios.post(ME_URL, meReqConfig)
-            .then(({ data: meData }) => meData).catch(error => null)
+        const meData = await axios.get(ME_URL, meReqConfig)
+            .then(({ data: meData }) => meData).catch(error => {
+                console.log(error.response)
+                return null
+            })
         if (!meData) {
             return res.status(500).send({ code: 'ME FETCH ERROR'  })
         }
 
-        return res.send({ me_data: meData }) 
-
+        return res.send({ me_data: meData })
     }       
 
 })
