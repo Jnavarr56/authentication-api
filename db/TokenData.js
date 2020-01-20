@@ -9,6 +9,10 @@ const tokenDataSchema = new Schema({
         type: String,
         required: true
     },
+    expired_at: {
+        type: Date,
+        required: true
+    },
 }, { timestamps: true })
 
 export default model('TokenData', tokenDataSchema, 'TokenData')

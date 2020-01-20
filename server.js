@@ -26,6 +26,7 @@ if (!PORT || !DB_URL) {
 }
 
 const stateParamCache = new NodeCache()
+const tokenCache = new NodeCache()
 
 const app = express()
 app
@@ -115,7 +116,7 @@ app.get('/authentication/callback', async (req, res) => {
             return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
         }
 
-        const { refresh_token, access_token } = tokenData
+        const { refresh_token, access_token, expires_in } = tokenData
         const ME_URL = 'https://api.spotify.com/v1/me' 
         const meReqConfig = {
             headers: { Authorization: `Bearer ${access_token}` }
@@ -128,6 +129,29 @@ app.get('/authentication/callback', async (req, res) => {
         if (!meData) {
             return res.status(500).send({ code: 'ME FETCH ERROR'  })
         }
+        const {
+            id: spotify_id
+        } = me_data
+
+
+        const today = moment()
+        const tomorrow = moment().add(1, 'day').startOf('day')
+        const secsTillTomorrow = tomorrow.diff(today, 'seconds')
+
+        // how to deal with fetching self data?
+        // reauthorize vs authorize endpoint?
+        tokenCache.set(access_token, {
+            refresh_token,
+            expires_in,
+            spotify_id,
+        }, secsTillTomorrow)
+
+        const expires_at = moment().add(expires_in, 'seconds').toDate()
+        await TokenData.create({
+            refresh_token,
+            access_token, 
+            expires_at
+        })
 
         return res.send({ me_data: meData })
     }       
