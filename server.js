@@ -12,9 +12,15 @@ import NodeCache from 'node-cache'
 
 require('dotenv').config()
 
-const { PORT, REDIRECT_URI, CLIENT_ID, CLIENT_SECRET } = process.env
-if (!PORT) {
-    console.log('Must Supply a PORT.\nShutting Down.')
+const { 
+    PORT,
+    DB_URL,
+    SPOTIFY_AUTH_REDIRECT_URI: REDIRECT_URI, 
+    SPOTIFY_AUTH_CLIENT_ID: CLIENT_ID,
+    SPOTIFY_AUTH_CLIENT_SECRET: CLIENT_SECRET
+} = process.env
+if (!PORT || !DB_URL) {
+    console.log('Must Supply a DB_URL and PORT.\nShutting Down.')
     process.exit(1)
 }
 
@@ -72,6 +78,8 @@ app.get('/authentication/callback', async (req, res) => {
         let param_decrypted = decipher.update(state_param_encrypted, 'hex', 'utf8')
         param_decrypted += decipher.final('utf8')
 
+        stateParamCache.del(state_param_encrypted)
+
         isValidParam =  param_decrypted === state_param
 
         if (!isValidParam) throw new Error()
@@ -98,8 +106,7 @@ app.get('/authentication/callback', async (req, res) => {
         })
 
         const tokenData = await axios.post(TOKEN_URL, tokenReqData, tokenReqConfig)
-            .then(({ data: tokenData }) => tokenData)
-            .catch(error => null)
+            .then(({ data: tokenData }) => tokenData).catch(error => null)
         if (!tokenData) {
             return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
         }
@@ -115,16 +122,18 @@ app.get('/authentication/callback', async (req, res) => {
             }
         }
         const meData = await axios.post(ME_URL, meReqConfig)
-            .then(({ data: meData }) => meData)
-            .catch(error => null)
+            .then(({ data: meData }) => meData).catch(error => null)
         if (!meData) {
             return res.status(500).send({ code: 'ME FETCH ERROR'  })
-        }~    
+        }
+
+        return res.send({ me_data: meData }) 
+
     }       
 
 })
 
-mongoose.connect('mongodb://127.0.0.1:27017/authentication-api', () => {
+mongoose.connect(`${DB_URL}/authentication-api`, () => {
     app.listen(PORT, () => {
         console.log(`Authentication API running on PORT ${PORT}!`)
     })
