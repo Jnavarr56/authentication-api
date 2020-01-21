@@ -9,7 +9,7 @@ const tokenDataSchema = new Schema({
         type: String,
         required: true
     },
-    expired_at: {
+    expires_at: {
         type: Date,
         required: true
     },
