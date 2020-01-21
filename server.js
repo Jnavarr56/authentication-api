@@ -39,33 +39,95 @@ app
     .use(bodyParser.urlencoded({ extended: true }))
     .use(morgan('dev'))
 
-app.get('/authentication/initiate', (req, res) => {
 
-    const randOpts = { length: 10, type: 'base64' }
-    const state_param = cryptoRandomString(randOpts)
-    const password = cryptoRandomString(randOpts)
 
+const getTimeTillTomorrow = timeUnit => {
     const today = moment()
     const tomorrow = moment().add(1, 'day').startOf('day')
-    const secsTillTomorrow = tomorrow.diff(today, 'seconds')
+    return tomorrow.diff(today, timeUnit)
+}
 
+const generateRandomCryptoPair = options => {
+    let randOpts = options ? options : { length: 10,  type: 'base64' }
+    return [cryptoRandomString(randOpts), cryptoRandomString(randOpts)]
+}
+
+const encryptWithPassword = (valToEncrypt, password) => {
     const cipher = crypto.createCipher('aes-128-cbc', password)
-    let state_param_encrypted = cipher.update(state_param, 'utf8', 'hex')
-    state_param_encrypted += cipher.final('hex')
+    let encryptedVal = cipher.update(valToEncrypt, 'utf8', 'hex')
+    encryptedVal += cipher.final('hex')
+    return encryptedVal
+}
 
-    stateParamCache.set(state_param_encrypted, {
-        password,
-        state_param
-    }, secsTillTomorrow)
+const decryptWithPassword = (valToDecrypt, password) => {
+    let val
+    try {
+        const decipher = crypto.createDecipher('aes-128-cbc', password)
+        valDecrypted = decipher.update(valToDecrypt, 'hex', 'utf8')
+        valDecrypted += decipher.final('utf8')
+        val = valDecrypted
+    } catch(e) {
+        val = null
+    }
+    return val
+}
 
-    const state = state_param_encrypted
+const fetchSpotifyTokens = async code => {
+    const encodedCredentials = Base64.encode(`${CLIENT_ID}:${CLIENT_SECRET}`)        
+    const TOKEN_URL = 'https://accounts.spotify.com/api/token'
+    const tokenReqContentType = 'application/x-www-form-urlencoded'
+    const tokenReqConfig = {
+        headers: { Authorization: `Basic ${encodedCredentials}` },
+        'Content-Type': tokenReqContentType
+    }
+    const tokenReqData = qs.stringify({
+        grant_type: 'authorization_code',
+        code: code,
+        redirect_uri: REDIRECT_URI
+    })
+    const tokenData = await axios.post(TOKEN_URL, tokenReqData, tokenReqConfig)
+        .then(({ data: tokenData }) => tokenData)
+        .catch(error => {
+            console.log(error.response)
+            return null
+        })
+    return tokenData
+}
+
+const fetchMeData = async accessToken => {
+    const ME_URL = 'https://api.spotify.com/v1/me' 
+    const meReqConfig = {
+        headers: { Authorization: `Bearer ${accessToken}` }
+    }
+    const meData = await axios.get(ME_URL, meReqConfig)
+        .then(({ data: meData }) => meData).catch(error => {
+            console.log(error.response)
+            return null
+        })
+    return meData
+}
+
+const getExpiresAtDate = secs => moment().add(secs, 'seconds').toDate()
+
+
+
+app.get('/authentication/initiate', (req, res) => {
+    
+    const [ stateParam, password ] = generateRandomCryptoPair()
+    const stateParamEncrypted = encryptWithPassword(stateParam, password)
+
+    stateParamCache.set(stateParamEncrypted, {
+        stateParam,
+        password
+    }, getTimeTillTomorrow('seconds'))
+
     const scope = 'user-top-read'
     const spotify_authorization_url = 
         'https://accounts.spotify.com/authorize'
         + '?response_type=code'
         + `&client_id=${CLIENT_ID}`
         + `&redirect_uri=${REDIRECT_URI}`
-        + `&state=${state}`
+        + `&state=${stateParamEncrypted}`
         + `&scope=${scope}`
         
     res.send({ spotify_authorization_url })
@@ -73,112 +135,52 @@ app.get('/authentication/initiate', (req, res) => {
 
 app.get('/authentication/callback', async (req, res) => {
 
-    const { state: state_param_encrypted, code } = req.query
-    if (!state_param_encrypted || !code) {
+    const { state: stateParamEncrypted, code } = req.query
+    if (!stateParamEncrypted || !code) {
         return res.status(500).send({ code: 'MISSING PARAMS ERROR' })
     }
 
-    const stateParamVals = stateParamCache.get(state_param_encrypted)
+    const stateParamVals = stateParamCache.get(stateParamEncrypted)
     if (!stateParamVals) {
-        return res.status(401).send({ code: 'STATE PARAM ERROR' })
+        return res.status(401).send({ code: 'UNRECOGNIZED STATE ERROR' })
     }
 
-    stateParamCache.del(state_param_encrypted)
+    stateParamCache.del(stateParamEncrypted)
+    const { password, stateParam } = stateParamVals
+    
+    const decryptedStateParam = decryptWithPassword(stateParamEncrypted, password)
 
-    const { password, state_param } = stateParamVals
-    let isValidParam
+    const isValidParam = stateParam === decryptedStateParam
+    if (!isValidParam) return res.status(401).send({ code: 'INVALID STATE ERROR' })
 
-    try {
-        const decipher = crypto.createDecipher('aes-128-cbc', password)
-        let param_decrypted = decipher.update(state_param_encrypted, 'hex', 'utf8')
-        param_decrypted += decipher.final('utf8')
-
-        isValidParam =  param_decrypted === state_param
-
-        if (!isValidParam) throw new Error()
-    } catch(e) {
-        return res.status(401).send({ code: 'STATE PARAM ERROR' })
+    const tokenData = fetchSpotifyTokens(code)
+    if (!tokenData) return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
+    
+    const meData = fetchMeData(tokenData.access_token)
+    if (!meData) return res.status(500).send({ code: 'ME FETCH ERROR'  })
+        
+    const cacheableData = {
+        refresh_token: tokenData.refresh_token,
+        expires_at: getExpiresAtDate(tokenData.expires_in),
+        spotify_id: meData.id
     }
+    tokenCache.set(tokenData.access_token, cacheableData, getTimeTillTomorrow('seconds'))
 
-    if (isValidParam) {
-
-        const encodedCredentials = Base64.encode(`${CLIENT_ID}:${CLIENT_SECRET}`)
-        
-        const TOKEN_URL = 'https://accounts.spotify.com/api/token'
-        const tokenReqContentType = 'application/x-www-form-urlencoded'
-        const tokenReqConfig = {
-            headers: { Authorization: `Basic ${encodedCredentials}` },
-            'Content-Type': tokenReqContentType
-        }
-        const tokenReqData = qs.stringify({
-            grant_type: 'authorization_code',
-            code: code,
-            redirect_uri: REDIRECT_URI
-        })
-
-        const tokenData = await axios.post(TOKEN_URL, tokenReqData, tokenReqConfig)
-            .then(({ data: tokenData }) => tokenData)
-            .catch(error => {
-                console.log(error.response)
-                return null
-            })
-        if (!tokenData) {
-            return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
-        }
-
-        const { refresh_token, access_token, expires_in } = tokenData
-
-
-        const ME_URL = 'https://api.spotify.com/v1/me' 
-        const meReqConfig = {
-            headers: { Authorization: `Bearer ${access_token}` }
-        }
-        const meData = await axios.get(ME_URL, meReqConfig)
-            .then(({ data: meData }) => meData).catch(error => {
-                console.log(error.response)
-                return null
-            })
-        if (!meData) {
-            return res.status(500).send({ code: 'ME FETCH ERROR'  })
-        }
-        const { id: spotify_id } = meData
-
-        
-        const today = moment()
-        const tomorrow = moment().add(1, 'day').startOf('day')
-        const secsTillTomorrow = tomorrow.diff(today, 'seconds')
-
-        const expires_at = moment().add(expires_in, 'seconds').toDate()
-        
-
-        // how to deal with fetching self data?
-        // reauthorize vs authorize endpoint?
-
-
-        tokenCache.set(access_token, {
-            expires_at,
-            refresh_token,
-            spotify_id,
-        }, secsTillTomorrow)
-        
-        await TokenData.create({
-            refresh_token,
-            access_token, 
-            expires_at
-        })
-
-        const accessTokenEncoded = Base64.encode(access_token)
-        
-        res.cookie(COOKIE_NAME, accessTokenEncoded)
-        return res.send({ 
-            me_data: meData,
-            token_data: {
-                refresh_token, 
-                access_token: accessTokenEncoded, 
-                expires_in
-            }//
-        })
+    const saveableData = {
+        ...cacheableData,
+        access_token: tokenData.access_token,        
     }
+    await TokenData.create(saveableData)
+
+    const accessTokenEncoded = Base64.encode(tokenData.access_token)
+    res.cookie(COOKIE_NAME, accessTokenEncoded)
+    return res.send({ 
+        me_data: meData,
+        token_data: {
+            ...saveableData,
+            access_token: accessTokenEncoded
+        },
+    })
 })
 
 app.post('/authentication/authorize', async (req, res) => {
