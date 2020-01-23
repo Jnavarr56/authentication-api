@@ -40,16 +40,19 @@ app
     .use(morgan('dev'))
 
 
-
 const getTimeTillTomorrow = timeUnit => {
     const today = moment()
     const tomorrow = moment().add(1, 'day').startOf('day')
     return tomorrow.diff(today, timeUnit)
 }
 
+const encodeAccessToken = accessToken => Base64.encode(accessToken)
+
+const decodeAccessToken = accessToken => Base64.decode(accessToken)
+
 const generateRandomCryptoPair = options => {
     let randOpts = options ? options : { length: 10,  type: 'base64' }
-    return [cryptoRandomString(randOpts), cryptoRandomString(randOpts)]
+    return [ cryptoRandomString(randOpts), cryptoRandomString(randOpts) ]
 }
 
 const encryptWithPassword = (valToEncrypt, password) => {
@@ -63,7 +66,7 @@ const decryptWithPassword = (valToDecrypt, password) => {
     let val
     try {
         const decipher = crypto.createDecipher('aes-128-cbc', password)
-        valDecrypted = decipher.update(valToDecrypt, 'hex', 'utf8')
+        let valDecrypted = decipher.update(valToDecrypt, 'hex', 'utf8')
         valDecrypted += decipher.final('utf8')
         val = valDecrypted
     } catch(e) {
@@ -85,13 +88,12 @@ const fetchSpotifyTokens = async code => {
         code: code,
         redirect_uri: REDIRECT_URI
     })
-    const tokenData = await axios.post(TOKEN_URL, tokenReqData, tokenReqConfig)
+    return axios.post(TOKEN_URL, tokenReqData, tokenReqConfig)
         .then(({ data: tokenData }) => tokenData)
         .catch(error => {
             console.log(error.response)
             return null
         })
-    return tokenData
 }
 
 const fetchMeData = async accessToken => {
@@ -99,16 +101,67 @@ const fetchMeData = async accessToken => {
     const meReqConfig = {
         headers: { Authorization: `Bearer ${accessToken}` }
     }
-    const meData = await axios.get(ME_URL, meReqConfig)
+    return axios.get(ME_URL, meReqConfig)
         .then(({ data: meData }) => meData).catch(error => {
             console.log(error.response)
             return null
         })
-    return meData
+}
+
+const refreshToken = async refreshToken => {
+    const encodedCredentials = Base64.encode(`${CLIENT_ID}:${CLIENT_SECRET}`)        
+    const REFRESH_URL = 'https://accounts.spotify.com/api/token'
+    const refreshReqContentType = 'application/x-www-form-urlencoded'
+    const refreshReqConfig = {
+        headers: { Authorization: `Basic ${encodedCredentials}` },
+        'Content-Type': refreshReqContentType
+    }
+    const refreshData = qs.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken
+    })
+    return axios.post(REFRESH_URL, refreshData, refreshReqConfig)
+        .then(({ data: tokenData }) => tokenData).catch(error => {
+            console.log(error.response)
+            return null
+        })
 }
 
 const getExpiresAtDate = secs => moment().add(secs, 'seconds').toDate()
 
+const isTokenExpired = expiresAt => new Date() > expiresAt
+
+const cacheTokenData = async (tokenData, spotifyId) => {
+    const {
+        access_token,
+        refresh_token,
+        expires_in
+    } = tokenData
+
+    const cacheableData = {
+        refresh_token: refresh_token,
+        expires_at: getExpiresAtDate(expires_in),
+        spotify_id: spotifyId
+    }
+    tokenCache.set(access_token, cacheableData, getTimeTillTomorrow('seconds'))
+}
+
+const saveTokenData = async (tokenData, spotifyId) => {
+    const {
+        access_token,
+        refresh_token,
+        expires_in
+    } = tokenData
+
+    const saveableData = {
+        refresh_token: refresh_token,
+        expires_at: getExpiresAtDate(expires_in),
+        spotify_id: spotifyId,
+        access_token
+    }
+
+    await TokenData.create(saveableData)
+}
 
 
 app.get('/authentication/initiate', (req, res) => {
@@ -136,50 +189,37 @@ app.get('/authentication/initiate', (req, res) => {
 app.get('/authentication/callback', async (req, res) => {
 
     const { state: stateParamEncrypted, code } = req.query
-    if (!stateParamEncrypted || !code) {
+    if (!stateParamEncrypted || !code)
         return res.status(500).send({ code: 'MISSING PARAMS ERROR' })
-    }
+    
 
-    const stateParamVals = stateParamCache.get(stateParamEncrypted)
-    if (!stateParamVals) {
+    const stateParamInCache = stateParamCache.get(stateParamEncrypted)
+    if (!stateParamInCache) 
         return res.status(401).send({ code: 'UNRECOGNIZED STATE ERROR' })
-    }
+    
 
     stateParamCache.del(stateParamEncrypted)
-    const { password, stateParam } = stateParamVals
+    const { password, stateParam } = stateParamInCache
     
-    const decryptedStateParam = decryptWithPassword(stateParamEncrypted, password)
-
-    const isValidParam = stateParam === decryptedStateParam
-    if (!isValidParam) return res.status(401).send({ code: 'INVALID STATE ERROR' })
-
-    const tokenData = fetchSpotifyTokens(code)
+    const isValidParam = stateParam === decryptWithPassword(stateParamEncrypted, password)
+    if (!isValidParam) return res.status(401).send({ code: 'UNRECOGNIZED STATE ERROR' })
+    
+    const tokenData = await fetchSpotifyTokens(code)
     if (!tokenData) return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
-    
-    const meData = fetchMeData(tokenData.access_token)
-    if (!meData) return res.status(500).send({ code: 'ME FETCH ERROR'  })
-        
-    const cacheableData = {
-        refresh_token: tokenData.refresh_token,
-        expires_at: getExpiresAtDate(tokenData.expires_in),
-        spotify_id: meData.id
-    }
-    tokenCache.set(tokenData.access_token, cacheableData, getTimeTillTomorrow('seconds'))
 
-    const saveableData = {
-        ...cacheableData,
-        access_token: tokenData.access_token,        
-    }
-    await TokenData.create(saveableData)
+    const me_data = await fetchMeData(tokenData.access_token)
+    if (!me_data) return res.status(500).send({ code: 'ME FETCH ERROR'  })
 
-    const accessTokenEncoded = Base64.encode(tokenData.access_token)
-    res.cookie(COOKIE_NAME, accessTokenEncoded)
+    const { id: spotify_id }  = me_data
+    cacheTokenData(tokenData, spotify_id)
+    await saveTokenData(tokenData, spotify_id)
+
+    const access_token_encoded = encodeAccessToken(tokenData.access_token)
+
+    res.cookie(COOKIE_NAME, access_token_encoded)
     return res.send({ 
-        me_data: meData,
-        token_data: {
-            ...saveableData,
-            access_token: accessTokenEncoded
-        },
+        me_data,
+        token_data: { access_token: access_token_encoded }
     })
 })
 
@@ -187,65 +227,44 @@ app.post('/authentication/authorize', async (req, res) => {
 
     const { token: headerToken } = req
     const { access_token: bodyToken  } = req.body
-
     if (!headerToken && !bodyToken) {
         return res.status(400).send({ code: 'MISSING TOKEN ERROR' })
     }
-
-    const accessTokenEncoded = headerToken ? headerToken : bodyToken
-    const accessToken = Base64.decode(accessTokenEncoded)
-
-    const inCache = tokenCache.get(accessToken)
-
-    if (inCache) {
-
-        const { expires_at, refresh_token } = inCache
-        
-        const now = new Date()
-        const tokenExpired = now > expires_at
-
-        if (tokenExpired) {
-            // refresh using refresh_token
-            // store new token data
-            // set new cookie
-            // return result
-        } else {
-            return res.send({ code: 'AUTHORIZED' })
-        }
-
-    } else {
-
-        const tokenDataRecord = await TokenData.findOne({ access_token: accessToken })
-
-        if (!tokenDataRecord)  {
-            return res.status(401).send({ code: 'UNAUTHORIZED' })
-        } 
-
-        const { expires_at, refresh_token, spotify_id } = tokenDataRecord
-
-        const now = new Date()
-        const tokenExpired = now > expires_at
-        if (tokenExpired) {
-            // refresh using refresh_token
-            // store new token data
-            // set new cookie
-            // return result
-        } else {
-
-            const today = moment()
-            const tomorrow = moment().add(1, 'day').startOf('day')
-            const secsTillTomorrow = tomorrow.diff(today, 'seconds')
     
-            tokenCache.set(accessToken, {
-                expires_at,
-                refresh_token,
-                spotify_id,
-            }, secsTillTomorrow)
+    const accessTokenEncoded = headerToken || bodyToken
+    const accessToken = decodeAccessToken(accessTokenEncoded)
 
-            res.cookie(COOKIE_NAME, accessTokenEncoded)
-            return res.send({ code: 'AUTHORIZED' })
-        }
+    
+    const tokenData = 
+        tokenCache.get(accessToken) || await TokenData.findOne({ access_token: accessToken  })
+    if (!tokenData) return res.status(401).send({ code: 'TOKEN NOT RECOGNIZED' })
+
+    const { 
+        spotify_id,
+        expires_at, 
+        refresh_token
+    } = tokenData
+
+    if (isTokenExpired(expires_at)) {
+        
+        const refreshedTokenData = await refreshToken(refresh_token)
+        if (!refreshedTokenData.refresh_token) refreshedTokenData.refresh_token = refresh_token
+
+        tokenCache.del(accessToken)
+        cacheTokenData(refreshedTokenData, spotify_id)
+        saveTokenData(refreshedTokenData, spotify_id)
+
+        const accessTokenEncoded = encodeAccessToken(refreshedTokenData.access_token)
+
+        res.cookie(COOKIE_NAME, accessTokenEncoded)
+        return res.send({
+            spotify_id,
+            code: 'AUTHORIZED',
+            refreshed_token_data: { access_token: accessTokenEncoded }
+        })        
     }
+
+    return res.send({ spotify_id, code: 'AUTHORIZED' })
 })
 
 app.post('/authentication/re-authorize', async (req, res) => {
@@ -257,109 +276,43 @@ app.post('/authentication/re-authorize', async (req, res) => {
         return res.status(400).send({ code: 'MISSING TOKEN ERROR' })
     }
 
-    const accessTokenEncoded = headerToken ? headerToken : bodyToken
-    const accessToken = Base64.decode(accessTokenEncoded)
+    const accessTokenEncoded = headerToken || bodyToken
+    const access_token = decodeAccessToken(accessTokenEncoded)
+    
+    const tokenData = tokenCache.get(access_token) || await TokenData.findOne({ access_token })
+    if (!tokenData) return res.status(401).send({ code: 'TOKEN NOT RECOGNIZED' })
 
-    const inCache = tokenCache.get(accessToken)
+    const { 
+        spotify_id,
+        expires_at, 
+        refresh_token
+    } = tokenData
 
-    if (inCache) {
 
-        const { expires_at, refresh_token } = inCache
+    if (isTokenExpired(expires_at)) {
         
-        const now = new Date()
-        const tokenExpired = now > expires_at
+        const refreshedTokenData = await refreshToken(refresh_token)
+        if (!refreshedTokenData.refresh_token) refreshedTokenData.refresh_token = refresh_token
 
-        if (tokenExpired) {
-            // refresh using refresh_token
-            // store new token data
-            // set new cookie
-            // return result
-        } else {
+        tokenCache.del(access_token)
+        cacheTokenData(refreshedTokenData, spotify_id)
+        saveTokenData(refreshedTokenData, spotify_id)
 
-            const ME_URL = 'https://api.spotify.com/v1/me' 
-            const meReqConfig = {
-                headers: { Authorization: `Bearer ${accessToken}` }
-            }
-            const meData = await axios.get(ME_URL, meReqConfig)
-                .then(({ data: meData }) => meData).catch(error => {
-                    console.log(error.response)
-                    return null
-                })
-            if (!meData) {
-                return res.status(500).send({ code: 'ME FETCH ERROR'  })
-            }
-            const tokenData = {
-                expires_at, 
-                refresh_token,
-                access_token: accessTokenEncoded
-            }//
+        const access_token_encoded = encodeAccessToken(refreshedTokenData.access_token)
 
-            res.cookie(COOKIE_NAME, accessTokenEncoded)
-            return res.send({ 
-                me_data: meData,
-                token_data: tokenData//
-            })
-        }
-
-    } else {
-
-        const tokenDataRecord = await TokenData.findOne({ access_token: accessToken })
-
-        if (!tokenDataRecord)  {
-            return res.status(401).send({ code: 'UNAUTHORIZED' })
-        } 
-
-        const { expires_at, refresh_token, spotify_id } = tokenDataRecord
-
-        const now = new Date()
-        const tokenExpired = now > expires_at
-        if (tokenExpired) {
-            // refresh using refresh_token
-            // store new token data
-            // set new cookie
-            // return result
-        } else {
-
-
-            const ME_URL = 'https://api.spotify.com/v1/me' 
-            const meReqConfig = {
-                headers: { Authorization: `Bearer ${accessToken}` }
-            }
-            const meData = await axios.get(ME_URL, meReqConfig)
-                .then(({ data: meData }) => meData).catch(error => {
-                    console.log(error.response)
-                    return null
-                })
-            if (!meData) {
-                return res.status(500).send({ code: 'ME FETCH ERROR'  })
-            }
-
-            const today = moment()
-            const tomorrow = moment().add(1, 'day').startOf('day')
-            const secsTillTomorrow = tomorrow.diff(today, 'seconds')
-
-            tokenCache.set(accessToken, {
-                expires_at,
-                refresh_token,
-                spotify_id,
-            }, secsTillTomorrow)
-
-            const tokenData = {
-                expires_at, 
-                refresh_token,
-                access_token: accessToken
-            }//
-
-            res.cookie(COOKIE_NAME, accessToken)
-            return res.send({ 
-                me_data: meData,
-                token_data: tokenData//
-            })
-        }
+        res.cookie(COOKIE_NAME, access_token_encoded)
+        return res.send({
+            code: 'AUTHORIZED',
+            spotify_id,
+            refreshed_token_data: { access_token: access_token_encoded }
+        })        
     }
+
+    return res.send({ spotify_id, code: 'AUTHORIZED' })        
 })
 
-mongoose.connect(`${DB_URL}/authentication-api`, () => {
+const dbOpts = { useNewUrlParser: true,  useUnifiedTopology: true }
+mongoose.connect(`${DB_URL}/authentication-api`, dbOpts, () => {
     app.listen(PORT, () => {
         console.log(`Authentication API running on PORT ${PORT}!`)
     })

@@ -16,7 +16,7 @@ const tokenDataSchema = new Schema({
     spotify_id: {
         type: String,
         required: true
-    },
+    }
 }, { timestamps: true })
 
 export default model('TokenData', tokenDataSchema, 'TokenData')
