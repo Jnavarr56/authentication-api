@@ -1,135 +1,64 @@
 import mongoose from 'mongoose'
 import express from 'express'
 import cors from 'cors'
-import crypto from 'crypto'
-import cryptoRandomString from 'crypto-random-string'
-import moment from 'moment'
-import { Base64 } from 'js-base64'
-import { TokenData } from './db'
-import qs from 'querystring'
-import axios from 'axios'
+import { TokenData } from './db/models'
 import NodeCache from 'node-cache'
 import morgan from 'morgan'
 import bearerToken from 'express-bearer-token'
 import bodyParser from 'body-parser'
+import { 
+    getTimeTillTomorrow, 
+    getExpiresAtDate, 
+    isTokenExpired 
+} from './utils/time'
+import { 
+    encodeAccessToken,
+    decodeAccessToken,
+    generateRandomCryptoPair,
+    encryptWithPassword,
+    decryptWithPassword
+} from './utils/encryption'
+import { 
+    fetchMeData,
+    fetchSpotifyTokens,
+    refreshToken
+} from './utils/spotify'
+import { 
+    checkForRequiredVars
+} from './utils/vars'
 
 require('dotenv').config()
 
-const COOKIE_NAME = 'speeterfoo'
+checkForRequiredVars({
+    CORS: false,
+    PORT: true,
+    DB_URL: true,
+    COOKIE_NAME: true,
+    SPOTIFY_AUTH_REDIRECT_URI: true,
+    SPOTIFY_AUTH_CLIENT_ID: true,
+    SPOTIFY_AUTH_CLIENT_SECRET:true
+})
+
 const { 
+    CORS,
     PORT,
     DB_URL,
+    COOKIE_NAME,
     SPOTIFY_AUTH_REDIRECT_URI: REDIRECT_URI, 
-    SPOTIFY_AUTH_CLIENT_ID: CLIENT_ID,
-    SPOTIFY_AUTH_CLIENT_SECRET: CLIENT_SECRET
+    SPOTIFY_AUTH_CLIENT_ID: CLIENT_ID
 } = process.env
-if (!PORT || !DB_URL) {
-    console.log('Must Supply a DB_URL and PORT.\nShutting Down.')
-    process.exit(1)
-}
 
 const stateParamCache = new NodeCache()
 const tokenCache = new NodeCache()
 
 const app = express()
+if (CORS) app.use(cors())
+
 app
-    .use(cors())
     .use(bearerToken())
     .use(bodyParser.json())
     .use(bodyParser.urlencoded({ extended: true }))
     .use(morgan('dev'))
-
-
-const getTimeTillTomorrow = timeUnit => {
-    const today = moment()
-    const tomorrow = moment().add(1, 'day').startOf('day')
-    return tomorrow.diff(today, timeUnit)
-}
-
-const encodeAccessToken = accessToken => Base64.encode(accessToken)
-
-const decodeAccessToken = accessToken => Base64.decode(accessToken)
-
-const generateRandomCryptoPair = options => {
-    let randOpts = options ? options : { length: 10,  type: 'base64' }
-    return [ cryptoRandomString(randOpts), cryptoRandomString(randOpts) ]
-}
-
-const encryptWithPassword = (valToEncrypt, password) => {
-    const cipher = crypto.createCipher('aes-128-cbc', password)
-    let encryptedVal = cipher.update(valToEncrypt, 'utf8', 'hex')
-    encryptedVal += cipher.final('hex')
-    return encryptedVal
-}
-
-const decryptWithPassword = (valToDecrypt, password) => {
-    let val
-    try {
-        const decipher = crypto.createDecipher('aes-128-cbc', password)
-        let valDecrypted = decipher.update(valToDecrypt, 'hex', 'utf8')
-        valDecrypted += decipher.final('utf8')
-        val = valDecrypted
-    } catch(e) {
-        val = null
-    }
-    return val
-}
-
-const fetchSpotifyTokens = async code => {
-    const encodedCredentials = Base64.encode(`${CLIENT_ID}:${CLIENT_SECRET}`)        
-    const TOKEN_URL = 'https://accounts.spotify.com/api/token'
-    const tokenReqContentType = 'application/x-www-form-urlencoded'
-    const tokenReqConfig = {
-        headers: { Authorization: `Basic ${encodedCredentials}` },
-        'Content-Type': tokenReqContentType
-    }
-    const tokenReqData = qs.stringify({
-        grant_type: 'authorization_code',
-        code: code,
-        redirect_uri: REDIRECT_URI
-    })
-    return axios.post(TOKEN_URL, tokenReqData, tokenReqConfig)
-        .then(({ data: tokenData }) => tokenData)
-        .catch(error => {
-            console.log(error.response)
-            return null
-        })
-}
-
-const fetchMeData = async accessToken => {
-    const ME_URL = 'https://api.spotify.com/v1/me' 
-    const meReqConfig = {
-        headers: { Authorization: `Bearer ${accessToken}` }
-    }
-    return axios.get(ME_URL, meReqConfig)
-        .then(({ data: meData }) => meData).catch(error => {
-            console.log(error.response)
-            return null
-        })
-}
-
-const refreshToken = async refreshToken => {
-    const encodedCredentials = Base64.encode(`${CLIENT_ID}:${CLIENT_SECRET}`)        
-    const REFRESH_URL = 'https://accounts.spotify.com/api/token'
-    const refreshReqContentType = 'application/x-www-form-urlencoded'
-    const refreshReqConfig = {
-        headers: { Authorization: `Basic ${encodedCredentials}` },
-        'Content-Type': refreshReqContentType
-    }
-    const refreshData = qs.stringify({
-        grant_type: 'refresh_token',
-        refresh_token: refreshToken
-    })
-    return axios.post(REFRESH_URL, refreshData, refreshReqConfig)
-        .then(({ data: tokenData }) => tokenData).catch(error => {
-            console.log(error.response)
-            return null
-        })
-}
-
-const getExpiresAtDate = secs => moment().add(secs, 'seconds').toDate()
-
-const isTokenExpired = expiresAt => new Date() > expiresAt
 
 const cacheTokenData = async (tokenData, spotifyId) => {
     const {
@@ -137,13 +66,11 @@ const cacheTokenData = async (tokenData, spotifyId) => {
         refresh_token,
         expires_in
     } = tokenData
-
-    const cacheableData = {
+    tokenCache.set(access_token,  {
         refresh_token: refresh_token,
         expires_at: getExpiresAtDate(expires_in),
         spotify_id: spotifyId
-    }
-    tokenCache.set(access_token, cacheableData, getTimeTillTomorrow('seconds'))
+    }, getTimeTillTomorrow('seconds'))
 }
 
 const saveTokenData = async (tokenData, spotifyId) => {
@@ -153,16 +80,13 @@ const saveTokenData = async (tokenData, spotifyId) => {
         expires_in
     } = tokenData
 
-    const saveableData = {
+    await TokenData.create({
         refresh_token: refresh_token,
         expires_at: getExpiresAtDate(expires_in),
         spotify_id: spotifyId,
         access_token
-    }
-
-    await TokenData.create(saveableData)
+    })
 }
-
 
 app.get('/authentication/initiate', (req, res) => {
     
