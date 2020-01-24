@@ -1,11 +1,11 @@
 import moment from 'moment'
 
-export function getTimeTillTomorrow(timeUnit) {
+export function getSecsTillFuture(timeVal, timeUnit) {
 	const today = moment()
 	const tomorrow = moment()
-		.add(1, 'day')
-		.startOf('day')
-	return tomorrow.diff(today, timeUnit)
+		.add(timeVal, timeUnit)
+		.startOf(timeUnit)
+	return tomorrow.diff(today, 'seconds')
 }
 
 export function getExpiresAtDate(secs) {

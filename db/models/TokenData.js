@@ -17,6 +17,11 @@ const tokenDataSchema = new Schema(
 		spotify_id: {
 			type: String,
 			required: true
+		},
+		user_id: {
+			type: Schema.Types.ObjectId,
+			ref: 'User',
+			required: true
 		}
 	},
 	{ timestamps: true }

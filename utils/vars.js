@@ -1,7 +1,7 @@
 export function checkForRequiredVars(requiredVars) {
 	let missingRequiredVars = []
-	Object.keys(requiredVars).forEach(envVar => {
-		if (requiredVars[envVar] && !process.env[envVar]) {
+	requiredVars.forEach(envVar => {
+		if (!process.env[envVar]) {
 			missingRequiredVars.push(envVar)
 		}
 	})
