@@ -20,6 +20,7 @@ import {
 } from './utils/encryption'
 import { fetchMeData, fetchSpotifyTokens, refreshToken } from './utils/spotify'
 import { checkForRequiredVars } from './utils/vars'
+import axios from 'axios'
 
 require('dotenv').config()
 
@@ -30,7 +31,8 @@ checkForRequiredVars({
 	COOKIE_NAME: true,
 	SPOTIFY_AUTH_REDIRECT_URI: true,
 	SPOTIFY_AUTH_CLIENT_ID: true,
-	SPOTIFY_AUTH_CLIENT_SECRET: true
+	SPOTIFY_AUTH_CLIENT_SECRET: true,
+	USERS_API: true
 })
 
 const SCOPE = [
@@ -51,7 +53,8 @@ const {
 	DB_URL,
 	COOKIE_NAME,
 	SPOTIFY_AUTH_REDIRECT_URI: REDIRECT_URI,
-	SPOTIFY_AUTH_CLIENT_ID: CLIENT_ID
+	SPOTIFY_AUTH_CLIENT_ID: CLIENT_ID,
+	USERS_API
 } = process.env
 
 const stateParamCache = new NodeCache()
@@ -91,7 +94,7 @@ const saveTokenData = async (tokenData, spotifyId) => {
 }
 
 app.get('/authentication/initiate', (req, res) => {
-	const [stateParam, password] = generateRandomCryptoPair()
+	const [ stateParam, password ] = generateRandomCryptoPair()
 	const stateParamEncrypted = encryptWithPassword(stateParam, password)
 
 	stateParamCache.set(
@@ -137,6 +140,24 @@ app.get('/authentication/callback', async (req, res) => {
 	const spotify_me_data = await fetchMeData(tokenData.access_token)
 	if (!spotify_me_data) return res.status(500).send({ code: 'ME FETCH ERROR' })
 
+	const newUserData = {
+		app_name: spotify_me_data.display_name,
+		display_name: spotify_me_data.display_name,
+		country: spotify_me_data.country,
+		email: spotify_me_data.email,
+		spotify_id: spotify_me_data.id
+	}
+
+	const user_data = await axios
+		.post(USERS_API, newUserData)
+		.then(({ data }) => data.new_user)
+		.catch(error => {
+			console.log(error)
+			return null
+		})
+
+	if (!user_data) return res.status(500).send({ code: 'USER CREATION ERROR' })
+
 	cacheTokenData(tokenData, spotify_me_data.id)
 	await saveTokenData(tokenData, spotify_me_data.id)
 
@@ -146,6 +167,7 @@ app.get('/authentication/callback', async (req, res) => {
 
 	return res.send({
 		spotify_me_data,
+		user_data,
 		token_data: { access_token: access_token_encoded }
 	})
 })
@@ -227,10 +249,25 @@ app.post('/authentication/re-authorize', async (req, res) => {
 		res.cookie(COOKIE_NAME, returnVal.token_data.access_token)
 	}
 
-	const spotify_me_data = await fetchMeData(returnVal.token_data.access_token)
+	const spotify_me_data = await fetchMeData(
+		returnVal.token_data ? returnVal.token_data.access_token : access_token
+	)
 	if (!spotify_me_data) return res.status(500).send({ code: 'ME FETCH ERROR' })
 
-	return res.send({ ...returnVal, spotify_me_data })
+	const user_data = await axios
+		.get(`${USERS_API}?spotify_id=${spotify_id}&limit=1`)
+		.then(({ data }) => data.query_results[0])
+		.catch(error => {
+			console.log(error)
+			return null
+		})
+	if (!user_data) return res.status(500).send({ code: 'USER RETRIEVAL ERROR' })
+
+	return res.send({
+		...returnVal,
+		user_data,
+		spotify_me_data
+	})
 })
 
 const dbOpts = { useNewUrlParser: true, useUnifiedTopology: true }
