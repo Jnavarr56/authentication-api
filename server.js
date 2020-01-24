@@ -39,6 +39,18 @@ checkForRequiredVars({
     SPOTIFY_AUTH_CLIENT_SECRET:true
 })
 
+const SCOPE = [
+    'user-top-read',
+    'user-read-recently-played',
+    'user-library-read',
+    'user-read-playback-state',
+    'user-read-email',
+    'playlist-read-collaborative',
+    'user-read-private',
+    'user-read-currently-playing',
+    'user-follow-read'
+].join(' ')
+
 const { 
     CORS,
     PORT,
@@ -47,6 +59,7 @@ const {
     SPOTIFY_AUTH_REDIRECT_URI: REDIRECT_URI, 
     SPOTIFY_AUTH_CLIENT_ID: CLIENT_ID
 } = process.env
+
 
 const stateParamCache = new NodeCache()
 const tokenCache = new NodeCache()
@@ -98,14 +111,14 @@ app.get('/authentication/initiate', (req, res) => {
         password
     }, getTimeTillTomorrow('seconds'))
 
-    const scope = 'user-top-read'
+    
     const spotify_authorization_url = 
         'https://accounts.spotify.com/authorize'
         + '?response_type=code'
         + `&client_id=${CLIENT_ID}`
         + `&redirect_uri=${REDIRECT_URI}`
         + `&state=${stateParamEncrypted}`
-        + `&scope=${scope}`
+        + `&scope=${SCOPE}`
         
     res.send({ spotify_authorization_url })
 })
@@ -115,13 +128,11 @@ app.get('/authentication/callback', async (req, res) => {
     const { state: stateParamEncrypted, code } = req.query
     if (!stateParamEncrypted || !code)
         return res.status(500).send({ code: 'MISSING PARAMS ERROR' })
-    
 
     const stateParamInCache = stateParamCache.get(stateParamEncrypted)
     if (!stateParamInCache) 
         return res.status(401).send({ code: 'UNRECOGNIZED STATE ERROR' })
     
-
     stateParamCache.del(stateParamEncrypted)
     const { password, stateParam } = stateParamInCache
     
@@ -131,18 +142,18 @@ app.get('/authentication/callback', async (req, res) => {
     const tokenData = await fetchSpotifyTokens(code)
     if (!tokenData) return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
 
-    const me_data = await fetchMeData(tokenData.access_token)
-    if (!me_data) return res.status(500).send({ code: 'ME FETCH ERROR'  })
+    const spotify_me_data = await fetchMeData(tokenData.access_token)
+    if (!spotify_me_data) return res.status(500).send({ code: 'ME FETCH ERROR'  })
 
-    const { id: spotify_id }  = me_data
-    cacheTokenData(tokenData, spotify_id)
-    await saveTokenData(tokenData, spotify_id)
+    cacheTokenData(tokenData, spotify_me_data.id)
+    await saveTokenData(tokenData, spotify_me_data.id)
 
     const access_token_encoded = encodeAccessToken(tokenData.access_token)
 
     res.cookie(COOKIE_NAME, access_token_encoded)
+
     return res.send({ 
-        me_data,
+        spotify_me_data,
         token_data: { access_token: access_token_encoded }
     })
 })
@@ -158,37 +169,32 @@ app.post('/authentication/authorize', async (req, res) => {
     const accessTokenEncoded = headerToken || bodyToken
     const accessToken = decodeAccessToken(accessTokenEncoded)
 
-    
     const tokenData = 
         tokenCache.get(accessToken) || await TokenData.findOne({ access_token: accessToken  })
     if (!tokenData) return res.status(401).send({ code: 'TOKEN NOT RECOGNIZED' })
 
-    const { 
-        spotify_id,
-        expires_at, 
-        refresh_token
-    } = tokenData
+    const { spotify_id, expires_at, refresh_token } = tokenData
+
+    let returnVal = { code: 'AUTHORIZED' }
 
     if (isTokenExpired(expires_at)) {
         
         const refreshedTokenData = await refreshToken(refresh_token)
+        if (!refreshedTokenData) return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
         if (!refreshedTokenData.refresh_token) refreshedTokenData.refresh_token = refresh_token
 
         tokenCache.del(accessToken)
         cacheTokenData(refreshedTokenData, spotify_id)
         saveTokenData(refreshedTokenData, spotify_id)
 
-        const accessTokenEncoded = encodeAccessToken(refreshedTokenData.access_token)
+        returnVal.token_data = {
+            access_token: encodeAccessToken(refreshedTokenData.access_token)
+        }
 
-        res.cookie(COOKIE_NAME, accessTokenEncoded)
-        return res.send({
-            spotify_id,
-            code: 'AUTHORIZED',
-            refreshed_token_data: { access_token: accessTokenEncoded }
-        })        
+        res.cookie(COOKIE_NAME, returnVal.token_data.access_token)
     }
 
-    return res.send({ spotify_id, code: 'AUTHORIZED' })
+    return res.send(returnVal)
 })
 
 app.post('/authentication/re-authorize', async (req, res) => {
@@ -206,33 +212,31 @@ app.post('/authentication/re-authorize', async (req, res) => {
     const tokenData = tokenCache.get(access_token) || await TokenData.findOne({ access_token })
     if (!tokenData) return res.status(401).send({ code: 'TOKEN NOT RECOGNIZED' })
 
-    const { 
-        spotify_id,
-        expires_at, 
-        refresh_token
-    } = tokenData
+    const { spotify_id, expires_at,  refresh_token } = tokenData
 
+    let returnVal = { code: 'AUTHORIZED' }
 
     if (isTokenExpired(expires_at)) {
         
         const refreshedTokenData = await refreshToken(refresh_token)
+        if (!refreshedTokenData) return res.status(500).send({ code: 'TOKEN FETCH ERROR'  })
         if (!refreshedTokenData.refresh_token) refreshedTokenData.refresh_token = refresh_token
 
         tokenCache.del(access_token)
         cacheTokenData(refreshedTokenData, spotify_id)
         saveTokenData(refreshedTokenData, spotify_id)
 
-        const access_token_encoded = encodeAccessToken(refreshedTokenData.access_token)
+        returnVal.token_data = {
+            access_token: encodeAccessToken(refreshedTokenData.access_token)
+        }
 
-        res.cookie(COOKIE_NAME, access_token_encoded)
-        return res.send({
-            code: 'AUTHORIZED',
-            spotify_id,
-            refreshed_token_data: { access_token: access_token_encoded }
-        })        
+        res.cookie(COOKIE_NAME, returnVal.token_data.access_token)
     }
 
-    return res.send({ spotify_id, code: 'AUTHORIZED' })        
+    const spotify_me_data = await fetchMeData(returnVal.token_data.access_token)
+    if (!spotify_me_data) return res.status(500).send({ code: 'ME FETCH ERROR'  })
+
+    return res.send({ ...returnVal, spotify_me_data })        
 })
 
 const dbOpts = { useNewUrlParser: true,  useUnifiedTopology: true }

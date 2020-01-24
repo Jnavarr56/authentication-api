@@ -1,4 +1,3 @@
-
 export function checkForRequiredVars(requiredVars) {
     let missingRequiredVars = []
     Object.keys(requiredVars).forEach(envVar => {
