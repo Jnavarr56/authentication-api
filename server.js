@@ -28,11 +28,13 @@ require('dotenv').config()
 checkForRequiredVars([
 	'PORT',
 	'DB_URL',
-	'COOKIE_NAME',
+	'AUTH_COOKIE_NAME',
 	'SPOTIFY_AUTH_REDIRECT_URI',
 	'SPOTIFY_AUTH_CLIENT_ID',
 	'SPOTIFY_AUTH_CLIENT_SECRET',
-	'USERS_API'
+	'AUTHENTICATION_API',
+	'USERS_API',
+	'GATEWAY_URL',
 ])
 
 const SCOPE = [
@@ -51,7 +53,8 @@ const {
 	CORS,
 	PORT,
 	DB_URL,
-	COOKIE_NAME,
+	AUTH_COOKIE_NAME,
+	AUTHENTICATION_API,
 	SPOTIFY_AUTH_REDIRECT_URI: REDIRECT_URI,
 	SPOTIFY_AUTH_CLIENT_ID: CLIENT_ID
 } = process.env
@@ -68,7 +71,7 @@ app
 	.use(bodyParser.urlencoded({ extended: true }))
 	.use(morgan('dev'))
 
-app.get('/authentication/initiate', (req, res) => {
+app.get(`${AUTHENTICATION_API}/initiate`, (req, res) => {
 	const [ stateParam, password ] = generateRandomCryptoPair()
 	const stateParamEncrypted = encryptWithPassword(stateParam, password)
 
@@ -92,7 +95,7 @@ app.get('/authentication/initiate', (req, res) => {
 	res.send({ spotify_authorization_url })
 })
 
-app.get('/authentication/callback', async (req, res) => {
+app.get(`${AUTHENTICATION_API}/callback`, async (req, res) => {
 	const { state: stateParamEncrypted, code } = req.query
 	if (!stateParamEncrypted || !code)
 		return res.status(500).send({ code: 'MISSING PARAMS ERROR' })
@@ -155,7 +158,7 @@ app.get('/authentication/callback', async (req, res) => {
 
 	const accessTokenEncoded = encodeAccessToken(access_token)
 
-	res.cookie(COOKIE_NAME, accessTokenEncoded, {
+	res.cookie(AUTH_COOKIE_NAME, accessTokenEncoded, {
 		domain: 'localhost',
 		path: '/',
 		httpOnly: false
@@ -170,7 +173,7 @@ app.get('/authentication/callback', async (req, res) => {
 	})
 })
 
-app.get('/authentication/authorize', async (req, res) => {
+app.get(`${AUTHENTICATION_API}/authorize`, async (req, res) => {
 	const { token: encodedAccessToken } = req
 
 	if (!encodedAccessToken)
@@ -222,7 +225,7 @@ app.get('/authentication/authorize', async (req, res) => {
 
 		const newEncodedAccessToken = encodeAccessToken(newAccessToken)
 
-		res.cookie(COOKIE_NAME, newEncodedAccessToken, {
+		res.cookie(AUTH_COOKIE_NAME, newEncodedAccessToken, {
 			domain: 'localhost',
 			path: '/',
 			httpOnly: false
@@ -234,7 +237,7 @@ app.get('/authentication/authorize', async (req, res) => {
 	return res.send(responseVal)
 })
 
-app.get('/authentication/re-authorize', async (req, res) => {
+app.get(`${AUTHENTICATION_API}/re-authorize`, async (req, res) => {
 	const { token: encodedAccessToken } = req
 
 	if (!encodedAccessToken)
@@ -286,7 +289,7 @@ app.get('/authentication/re-authorize', async (req, res) => {
 
 		const newEncodedAccessToken = encodeAccessToken(currentAccessToken)
 
-		res.cookie(COOKIE_NAME, newEncodedAccessToken, {
+		res.cookie(AUTH_COOKIE_NAME, newEncodedAccessToken, {
 			domain: 'localhost',
 			path: '/',
 			httpOnly: false
