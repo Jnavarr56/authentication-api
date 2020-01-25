@@ -155,7 +155,11 @@ app.get('/authentication/callback', async (req, res) => {
 
 	const accessTokenEncoded = encodeAccessToken(access_token)
 
-	res.cookie(COOKIE_NAME, accessTokenEncoded)
+	res.cookie(COOKIE_NAME, accessTokenEncoded, {
+		domain: 'localhost',
+		path: '/',
+		httpOnly: false
+	})
 
 	return res.send({
 		user_data: userData,
@@ -218,7 +222,11 @@ app.get('/authentication/authorize', async (req, res) => {
 
 		const newEncodedAccessToken = encodeAccessToken(newAccessToken)
 
-		res.cookie(COOKIE_NAME, newEncodedAccessToken)
+		res.cookie(COOKIE_NAME, newEncodedAccessToken, {
+			domain: 'localhost',
+			path: '/',
+			httpOnly: false
+		})
 
 		responseVal.token_data = { access_token: newEncodedAccessToken }
 	}
@@ -278,7 +286,11 @@ app.get('/authentication/re-authorize', async (req, res) => {
 
 		const newEncodedAccessToken = encodeAccessToken(currentAccessToken)
 
-		res.cookie(COOKIE_NAME, newEncodedAccessToken)
+		res.cookie(COOKIE_NAME, newEncodedAccessToken, {
+			domain: 'localhost',
+			path: '/',
+			httpOnly: false
+		})
 
 		responseVal.token_data = { access_token: newEncodedAccessToken }
 	}

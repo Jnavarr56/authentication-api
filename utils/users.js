@@ -5,10 +5,10 @@ require('dotenv').config()
 const { USERS_API } = process.env
 
 export async function checkIfUserExists(spotify_id) {
-	const query = { spotify_id, limit: 1, active: true }
+	const query = `?spotify_id=${spotify_id}` + '&limit=1' + '&active=true'
 
 	return await axios
-		.get(USERS_API, query)
+		.get(USERS_API + query)
 		.then(({ data }) => data.query_results[0])
 		.catch(error => {
 			console.log(error)
