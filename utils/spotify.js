@@ -29,10 +29,6 @@ export async function fetchSpotifyTokens(code) {
 	return axios
 		.post(TOKEN_URL, data, config)
 		.then(({ data: tokenData }) => tokenData)
-		.catch(error => {
-			console.log(error.response)
-			return null
-		})
 }
 
 export async function fetchMeData(accessToken) {
@@ -40,10 +36,6 @@ export async function fetchMeData(accessToken) {
 	return axios
 		.get(ME_URL, { headers })
 		.then(({ data: meData }) => meData)
-		.catch(error => {
-			console.log(error.response)
-			return null
-		})
 }
 
 export async function refreshToken(refreshToken) {
@@ -58,8 +50,4 @@ export async function refreshToken(refreshToken) {
 	return axios
 		.post(TOKEN_URL, data, config)
 		.then(({ data: tokenData }) => tokenData)
-		.catch(error => {
-			console.log(error.response)
-			return null
-		})
 }

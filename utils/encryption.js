@@ -1,6 +1,7 @@
 import crypto from 'crypto'
-import cryptoRandomString from 'crypto-random-string'
 import { Base64 } from 'js-base64'
+
+const IV_LENGTH = 16
 
 export function encodeAccessToken(accessToken) {
 	return Base64.encode(accessToken)
@@ -10,27 +11,28 @@ export function decodeAccessToken(accessToken) {
 	return Base64.decode(accessToken)
 }
 
-export function generateRandomCryptoPair(options) {
-	const randOpts = options ? options : { length: 10, type: 'base64' }
-	return [cryptoRandomString(randOpts), cryptoRandomString(randOpts)]
-}
-
 export function encryptWithPassword(valToEncrypt, password) {
-	const cipher = crypto.createCipher('aes-128-cbc', password)
-	let encryptedVal = cipher.update(valToEncrypt, 'utf8', 'hex')
-	encryptedVal += cipher.final('hex')
-	return encryptedVal
+	const iv = crypto.randomBytes(IV_LENGTH)
+	const cipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(password), iv)
+	let encrypted = cipher.update(valToEncrypt);
+   
+	encrypted = Buffer.concat([encrypted, cipher.final()])
+   
+	return iv.toString('hex') + ':' + encrypted.toString('hex')
 }
 
 export function decryptWithPassword(valToDecrypt, password) {
-	let val
 	try {
-		const decipher = crypto.createDecipher('aes-128-cbc', password)
-		let valDecrypted = decipher.update(valToDecrypt, 'hex', 'utf8')
-		valDecrypted += decipher.final('utf8')
-		val = valDecrypted
-	} catch (e) {
-		val = null
+		const textParts = valToDecrypt.split(':');
+		const iv = Buffer.from(textParts.shift(), 'hex')
+		const encryptedText = Buffer.from(textParts.join(':'), 'hex');
+		const decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(password), iv)
+		let decrypted = decipher.update(encryptedText)
+	   
+		decrypted = Buffer.concat([decrypted, decipher.final()]);
+	   
+		return decrypted.toString()
+	} catch(e) {
+		return null
 	}
-	return val
 }
